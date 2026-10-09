@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
 import { Canvas, useLoader } from '@react-three/fiber'
 import { OrbitControls, Grid } from '@react-three/drei'
+// @ts-ignore
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader'
-import * as THREE from 'three'
-import JSZip from 'jszip'
 import { saveAs } from 'file-saver'
 import { 
   Palette, Flame, Box, FileBox, RotateCcw, Maximize, 
   Layers, Sun, Download, Save, Package, AlertTriangle, ZoomIn, ZoomOut
 } from 'lucide-react'
+
 
 interface Pigment { id: number; name: string; pigment_index: string; k: number[]; s: number[] }
 interface Glaze { id: number; name: string; silica: number; alumina: number; flux: number; colorant: string; base_color_hex: string }
