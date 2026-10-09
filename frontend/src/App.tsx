@@ -152,10 +152,10 @@ function App() {
   const [batchLoading, setBatchLoading] = useState(false)
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/pigments').then(r => r.json()).then(setPigments).catch(console.error)
-    fetch('http://localhost:8000/api/glazes').then(r => r.json()).then(setGlazes).catch(console.error)
-    fetch('http://localhost:8000/api/clays').then(r => r.json()).then(setClays).catch(console.error)
-    fetch('http://localhost:8000/api/sculpture-materials').then(r => r.json()).then(setSculptureMaterials).catch(console.error)
+    fetch('https://alchemists-palette-api.onrender.com/api/pigments').then(r => r.json()).then(setPigments).catch(console.error)
+    fetch('https://alchemists-palette-api.onrender.com/api/glazes').then(r => r.json()).then(setGlazes).catch(console.error)
+    fetch('https://alchemists-palette-api.onrender.com/api/clays').then(r => r.json()).then(setClays).catch(console.error)
+    fetch('https://alchemists-palette-api.onrender.com/api/sculpture-materials').then(r => r.json()).then(setSculptureMaterials).catch(console.error)
   }, [])
 
   const pigment1 = pigments.find(p => p.id === pigment1Id)
@@ -165,7 +165,7 @@ function App() {
     if (!pigment1 || !pigment2) return
     setLoading(true)
     try {
-      const mixRes = await fetch('http://localhost:8000/api/mix', {
+      const mixRes = await fetch('https://alchemists-palette-api.onrender.com/api/mix', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pigment1_k: pigment1.k, pigment1_s: pigment1.s, pigment2_k: pigment2.k, pigment2_s: pigment2.s, ratio })
       })
@@ -179,7 +179,7 @@ function App() {
     if (mixedRgb[0] === 0 && mixedRgb[1] === 0 && mixedRgb[2] === 0) return
     const fetchAged = async () => {
       try {
-        const res = await fetch('http://localhost:8000/api/age', {
+        const res = await fetch('https://alchemists-palette-api.onrender.com/api/age', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ rgb: mixedRgb, years, binder: "linseed" })
         })
@@ -192,7 +192,7 @@ function App() {
   const handleFire = async () => {
     setKilnLoading(true)
     try {
-      const res = await fetch('http://localhost:8000/api/fire', {
+      const res = await fetch('https://alchemists-palette-api.onrender.com/api/fire', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ glaze_id: selectedGlazeId, clay_id: selectedClayId, cone_temp: coneTemp })
       })
@@ -204,7 +204,7 @@ function App() {
   const handleAnalyzeSculpture = async () => {
     setSculptureLoading(true)
     try {
-      const res = await fetch('http://localhost:8000/api/analyze-sculpture', {
+      const res = await fetch('https://alchemists-palette-api.onrender.com/api/analyze-sculpture', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ material_id: selectedMaterialId, height_m: sculptureHeight, width_m: sculptureWidth, depth_m: sculptureDepth, arm_extension_m: armExtension })
       })
@@ -231,7 +231,7 @@ function App() {
     const recipeName = prompt("Recipe name:", "My Paint Mixture")
     if (!recipeName) return
     try {
-      const res = await fetch('http://localhost:8000/api/export/paint-recipe', {
+      const res = await fetch('https://alchemists-palette-api.onrender.com/api/export/paint-recipe', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recipe_name: recipeName, pigment1_name: pigment1.name, pigment2_name: pigment2.name, ratio, years_simulated: years, aged_hex: agedColor })
       })
@@ -250,7 +250,7 @@ function App() {
     if (savedPaintRecipes.length === 0) { alert("No recipes saved yet!"); return }
     setBatchLoading(true)
     try {
-      const res = await fetch('http://localhost:8000/api/export/batch-paint', {
+      const res = await fetch('https://alchemists-palette-api.onrender.com/api/export/batch-paint', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recipes: savedPaintRecipes })
       })
@@ -264,7 +264,7 @@ function App() {
     const recipeName = prompt("Recipe name:", "My Kiln Firing")
     if (!recipeName) return
     try {
-      const res = await fetch('http://localhost:8000/api/export/kiln-recipe', {
+      const res = await fetch('https://alchemists-palette-api.onrender.com/api/export/kiln-recipe', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recipe_name: recipeName, glaze_name: kilnResult.glaze_name, clay_name: kilnResult.clay_name, cone_temp: kilnResult.cone_temp, maturity: kilnResult.maturity, surface: kilnResult.surface, shrinkage: kilnResult.shrinkage_percent, final_hex: kilnResult.final_color_hex })
       })
@@ -283,7 +283,7 @@ function App() {
     if (savedKilnRecipes.length === 0) { alert("No recipes saved yet!"); return }
     setBatchLoading(true)
     try {
-      const res = await fetch('http://localhost:8000/api/export/batch-kiln', {
+      const res = await fetch('https://alchemists-palette-api.onrender.com/api/export/batch-kiln', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recipes: savedKilnRecipes })
       })
