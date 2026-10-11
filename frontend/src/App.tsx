@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Canvas, useLoader } from '@react-three/fiber'
 import { OrbitControls, Grid } from '@react-three/drei'
 // @ts-ignore
@@ -6,9 +6,12 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader'
 import { saveAs } from 'file-saver'
 import { 
   Palette, Flame, Box, FileBox, RotateCcw, Maximize, 
-  Layers, Sun, Download, Save, Package, AlertTriangle, ZoomIn, ZoomOut
+  Layers, Sun, Download, Save, Package, AlertTriangle, ZoomIn, ZoomOut,
+  LoaderCircle, RefreshCw, CircleCheck, X
 } from 'lucide-react'
 
+
+const API = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ?? 'https://alchemists-palette-api.onrender.com'
 
 interface Pigment { id: number; name: string; pigment_index: string; k: number[]; s: number[] }
 interface Glaze { id: number; name: string; silica: number; alumina: number; flux: number; colorant: string; base_color_hex: string }
@@ -150,66 +153,113 @@ function App() {
   const controlsRef = useRef<any>(null)
   
   const [batchLoading, setBatchLoading] = useState(false)
+  const [apiStatus, setApiStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [toast, setToast] = useState<{ message: string; kind: 'info' | 'error' } | null>(null)
+  const [nameDialog, setNameDialog] = useState<{ title: string; value: string } | null>(null)
+  const nameResolver = useRef<((v: string | null) => void) | null>(null)
+  const toastTimer = useRef<number | undefined>(undefined)
+  const mixSeq = useRef(0)
 
-  useEffect(() => {
-    fetch('https://alchemists-palette-api.onrender.com/api/pigments').then(r => r.json()).then(setPigments).catch(console.error)
-    fetch('https://alchemists-palette-api.onrender.com/api/glazes').then(r => r.json()).then(setGlazes).catch(console.error)
-    fetch('https://alchemists-palette-api.onrender.com/api/clays').then(r => r.json()).then(setClays).catch(console.error)
-    fetch('https://alchemists-palette-api.onrender.com/api/sculpture-materials').then(r => r.json()).then(setSculptureMaterials).catch(console.error)
+  const notify = (message: string, kind: 'info' | 'error' = 'info') => {
+    setToast({ message, kind })
+    window.clearTimeout(toastTimer.current)
+    toastTimer.current = window.setTimeout(() => setToast(null), 4000)
+  }
+
+  const askName = (title: string, value: string) => new Promise<string | null>(resolve => {
+    nameResolver.current = resolve
+    setNameDialog({ title, value })
+  })
+
+  const closeName = (v: string | null) => {
+    nameResolver.current?.(v?.trim() ? v.trim() : null)
+    nameResolver.current = null
+    setNameDialog(null)
+  }
+
+  const loadData = useCallback(() => {
+    setApiStatus('loading')
+    const get = <T,>(path: string) => fetch(`${API}${path}`).then(r => { if (!r.ok) throw new Error(path); return r.json() as Promise<T> })
+    Promise.all([
+      get<Pigment[]>('/api/pigments'), get<Glaze[]>('/api/glazes'),
+      get<Clay[]>('/api/clays'), get<SculptureMaterial[]>('/api/sculpture-materials')
+    ]).then(([p, g, c, m]) => {
+      setPigments(p); setGlazes(g); setClays(c); setSculptureMaterials(m)
+      if (p.length) { setPigment1Id(p[0].id); setPigment2Id((p[1] ?? p[0]).id) }
+      if (g.length) setSelectedGlazeId(g[0].id)
+      if (c.length) setSelectedClayId(c[0].id)
+      if (m.length) setSelectedMaterialId(m[0].id)
+      setApiStatus('ready')
+    }).catch(() => setApiStatus('error'))
   }, [])
+
+  useEffect(() => { loadData() }, [loadData])
 
   const pigment1 = pigments.find(p => p.id === pigment1Id)
   const pigment2 = pigments.find(p => p.id === pigment2Id)
 
-  const handleMix = async () => {
+  const mixPigments = async (silent = false) => {
     if (!pigment1 || !pigment2) return
-    setLoading(true)
+    const seq = ++mixSeq.current
+    if (!silent) setLoading(true)
     try {
-      const mixRes = await fetch('https://alchemists-palette-api.onrender.com/api/mix', {
+      const mixRes = await fetch(`${API}/api/mix`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pigment1_k: pigment1.k, pigment1_s: pigment1.s, pigment2_k: pigment2.k, pigment2_s: pigment2.s, ratio })
       })
+      if (!mixRes.ok) throw new Error('mix')
       const mixData = await mixRes.json()
-      setMixedColor(mixData.hex); setMixedRgb(mixData.rgb); setAgedColor(mixData.hex); setYears(0)
-    } catch (error) { console.error(error) }
-    setLoading(false)
+      if (seq === mixSeq.current) { setMixedColor(mixData.hex); setMixedRgb(mixData.rgb); setAgedColor(mixData.hex) }
+    } catch { if (!silent) notify('Mixing failed — check your connection and try again.', 'error') }
+    if (!silent) setLoading(false)
   }
+  const handleMix = () => mixPigments(false)
+
+  useEffect(() => {
+    if (!pigment1 || !pigment2) return
+    const t = window.setTimeout(() => { mixPigments(true) }, 250)
+    return () => window.clearTimeout(t)
+  }, [pigment1Id, pigment2Id, ratio, pigments])
 
   useEffect(() => {
     if (mixedRgb[0] === 0 && mixedRgb[1] === 0 && mixedRgb[2] === 0) return
-    const fetchAged = async () => {
+    let cancelled = false
+    const t = window.setTimeout(async () => {
       try {
-        const res = await fetch('https://alchemists-palette-api.onrender.com/api/age', {
+        const res = await fetch(`${API}/api/age`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ rgb: mixedRgb, years, binder: "linseed" })
         })
-        setAgedColor((await res.json()).hex)
-      } catch (e) { console.error(e) }
-    }
-    fetchAged()
+        if (!res.ok) throw new Error('age')
+        const data = await res.json()
+        if (!cancelled) setAgedColor(data.hex)
+      } catch { /* aging preview is non-critical */ }
+    }, 120)
+    return () => { cancelled = true; window.clearTimeout(t) }
   }, [years, mixedRgb])
 
   const handleFire = async () => {
     setKilnLoading(true)
     try {
-      const res = await fetch('https://alchemists-palette-api.onrender.com/api/fire', {
+      const res = await fetch(`${API}/api/fire`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ glaze_id: selectedGlazeId, clay_id: selectedClayId, cone_temp: coneTemp })
       })
       setKilnResult(await res.json())
-    } catch (error) { console.error(error) }
+    } catch { notify('Request failed — check your connection and try again.', 'error') }
     setKilnLoading(false)
   }
 
   const handleAnalyzeSculpture = async () => {
+    if (![sculptureHeight, sculptureWidth, sculptureDepth].every(v => Number.isFinite(v) && v > 0)) { notify('Height, width and depth must be greater than zero.', 'error'); return }
     setSculptureLoading(true)
     try {
-      const res = await fetch('https://alchemists-palette-api.onrender.com/api/analyze-sculpture', {
+      const res = await fetch(`${API}/api/analyze-sculpture`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ material_id: selectedMaterialId, height_m: sculptureHeight, width_m: sculptureWidth, depth_m: sculptureDepth, arm_extension_m: armExtension })
       })
       setSculptureResult(await res.json())
-    } catch (error) { console.error(error) }
+    } catch { notify('Request failed — check your connection and try again.', 'error') }
     setSculptureLoading(false)
   }
 
@@ -228,67 +278,67 @@ function App() {
 
   const exportSinglePaintRecipe = async () => {
     if (!pigment1 || !pigment2) return
-    const recipeName = prompt("Recipe name:", "My Paint Mixture")
+    const recipeName = await askName("Recipe name", "My Paint Mixture")
     if (!recipeName) return
     try {
-      const res = await fetch('https://alchemists-palette-api.onrender.com/api/export/paint-recipe', {
+      const res = await fetch(`${API}/api/export/paint-recipe`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recipe_name: recipeName, pigment1_name: pigment1.name, pigment2_name: pigment2.name, ratio, years_simulated: years, aged_hex: agedColor })
       })
       saveAs(await res.blob(), `${recipeName}.pdf`)
-    } catch (error) { console.error(error) }
+    } catch { notify('Request failed — check your connection and try again.', 'error') }
   }
 
-  const savePaintToBatch = () => {
+  const savePaintToBatch = async () => {
     if (!pigment1 || !pigment2) return
-    const name = prompt("Recipe name:", `Recipe ${savedPaintRecipes.length + 1}`)
+    const name = await askName("Recipe name", `Recipe ${savedPaintRecipes.length + 1}`)
     if (!name) return
     setSavedPaintRecipes([...savedPaintRecipes, { recipe_name: name, pigment1_name: pigment1.name, pigment2_name: pigment2.name, ratio, years_simulated: years, aged_hex: agedColor }])
   }
 
   const exportBatchPaint = async () => {
-    if (savedPaintRecipes.length === 0) { alert("No recipes saved yet!"); return }
+    if (savedPaintRecipes.length === 0) { notify('No recipes saved yet — press Save first.'); return }
     setBatchLoading(true)
     try {
-      const res = await fetch('https://alchemists-palette-api.onrender.com/api/export/batch-paint', {
+      const res = await fetch(`${API}/api/export/batch-paint`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recipes: savedPaintRecipes })
       })
       saveAs(await res.blob(), 'paint_recipes_batch.zip')
-    } catch (error) { console.error(error) }
+    } catch { notify('Request failed — check your connection and try again.', 'error') }
     setBatchLoading(false)
   }
 
   const exportSingleKilnRecipe = async () => {
     if (!kilnResult) return
-    const recipeName = prompt("Recipe name:", "My Kiln Firing")
+    const recipeName = await askName("Recipe name", "My Kiln Firing")
     if (!recipeName) return
     try {
-      const res = await fetch('https://alchemists-palette-api.onrender.com/api/export/kiln-recipe', {
+      const res = await fetch(`${API}/api/export/kiln-recipe`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recipe_name: recipeName, glaze_name: kilnResult.glaze_name, clay_name: kilnResult.clay_name, cone_temp: kilnResult.cone_temp, maturity: kilnResult.maturity, surface: kilnResult.surface, shrinkage: kilnResult.shrinkage_percent, final_hex: kilnResult.final_color_hex })
       })
       saveAs(await res.blob(), `${recipeName}.pdf`)
-    } catch (error) { console.error(error) }
+    } catch { notify('Request failed — check your connection and try again.', 'error') }
   }
 
-  const saveKilnToBatch = () => {
+  const saveKilnToBatch = async () => {
     if (!kilnResult) return
-    const name = prompt("Recipe name:", `Firing ${savedKilnRecipes.length + 1}`)
+    const name = await askName("Recipe name", `Firing ${savedKilnRecipes.length + 1}`)
     if (!name) return
     setSavedKilnRecipes([...savedKilnRecipes, { recipe_name: name, glaze_name: kilnResult.glaze_name, clay_name: kilnResult.clay_name, cone_temp: kilnResult.cone_temp, maturity: kilnResult.maturity, surface: kilnResult.surface, shrinkage: kilnResult.shrinkage_percent, final_hex: kilnResult.final_color_hex }])
   }
 
   const exportBatchKiln = async () => {
-    if (savedKilnRecipes.length === 0) { alert("No recipes saved yet!"); return }
+    if (savedKilnRecipes.length === 0) { notify('No recipes saved yet — press Save first.'); return }
     setBatchLoading(true)
     try {
-      const res = await fetch('https://alchemists-palette-api.onrender.com/api/export/batch-kiln', {
+      const res = await fetch(`${API}/api/export/batch-kiln`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recipes: savedKilnRecipes })
       })
       saveAs(await res.blob(), 'kiln_recipes_batch.zip')
-    } catch (error) { console.error(error) }
+    } catch { notify('Request failed — check your connection and try again.', 'error') }
     setBatchLoading(false)
   }
 
@@ -322,12 +372,35 @@ function App() {
       <div className="px-4 pb-12 max-w-3xl mx-auto">
         <div className="bg-zinc-900/60 backdrop-blur-xl p-5 sm:p-8 rounded-3xl shadow-2xl border border-zinc-800/60">
           
+          {activeTab !== 'stl' && apiStatus !== 'ready' ? (
+            <div role="status" className="flex flex-col items-center text-center gap-4 py-12 animate-tab-enter">
+              {apiStatus === 'loading' ? (
+                <>
+                  <LoaderCircle size={36} className="animate-spin text-amber-400" />
+                  <div>
+                    <p className="font-semibold text-zinc-200">Connecting to the simulation server…</p>
+                    <p className="text-sm text-zinc-500 mt-1">Free hosting sleeps when idle, so the first load can take up to a minute.</p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <AlertTriangle size={36} className="text-red-400" />
+                  <div>
+                    <p className="font-semibold text-red-400">Couldn't reach the simulation server.</p>
+                    <p className="text-sm text-zinc-500 mt-1">Check your connection, then try again.</p>
+                  </div>
+                  <button onClick={loadData} className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 font-semibold transition-colors"><RefreshCw size={16} /> Retry</button>
+                </>
+              )}
+            </div>
+          ) : (<>
+
           {activeTab === 'paint' && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="space-y-6 animate-tab-enter">
               {pigments.length === 0 ? (
                 <div className="text-center py-8 bg-red-900/10 border border-red-500/20 rounded-xl">
                   <AlertTriangle className="mx-auto text-red-400 mb-2" size={32} />
-                  <p className="text-red-400 font-semibold">No pigments loaded from database.</p>
+                  <p className="text-red-400 font-semibold">The pigment database is empty.</p>
                 </div>
               ) : (
                 <>
@@ -347,7 +420,7 @@ function App() {
                   </div>
                   <div className="bg-zinc-950/50 p-5 rounded-2xl border border-zinc-800">
                     <div className="flex justify-between mb-4"><span className="text-sm font-medium text-zinc-400">Mixing Ratio</span><span className="text-sm font-bold text-amber-400">{Math.round(ratio * 100)}% / {Math.round((1 - ratio) * 100)}%</span></div>
-                    <input type="range" min="0" max="1" step="0.01" value={ratio} onChange={(e) => setRatio(parseFloat(e.target.value))} className="w-full h-2 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-amber-500" />
+                    <input type="range" min="0" max="1" step="0.01" value={ratio} onChange={(e) => setRatio(parseFloat(e.target.value))} className="range-slider" />
                   </div>
                   <button onClick={handleMix} disabled={loading} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black font-bold py-3.5 px-4 rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2">
                     {loading ? 'Calculating Physics...' : <><Palette size={20} /> Grind & Mix Pigments</>}
@@ -369,7 +442,7 @@ function App() {
                       <span className="text-sm font-semibold text-amber-400 flex items-center gap-2"><RotateCcw size={16} /> Time Travel Simulation</span>
                       <span className="bg-amber-500/20 text-amber-400 px-3 py-1 rounded-full text-xs font-bold border border-amber-500/30">{years} Years</span>
                     </div>
-                    <input type="range" min="0" max="150" step="1" value={years} onChange={(e) => setYears(parseInt(e.target.value))} className="w-full h-2 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-amber-500" />
+                    <input type="range" min="0" max="150" step="1" value={years} onChange={(e) => setYears(parseInt(e.target.value))} className="range-slider" />
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
                     <button onClick={exportSinglePaintRecipe} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold py-3 px-4 rounded-xl transition-all flex items-center justify-center gap-2 border border-zinc-700"><Download size={18} /> Export PDF</button>
@@ -382,18 +455,18 @@ function App() {
           )}
 
           {activeTab === 'kiln' && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="space-y-6 animate-tab-enter">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div><label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Glaze Recipe</label><select value={selectedGlazeId} onChange={(e) => setSelectedGlazeId(parseInt(e.target.value))} className="w-full bg-zinc-950/50 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 transition-all">{glazes.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}</select></div>
                 <div><label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Clay Body</label><select value={selectedClayId} onChange={(e) => setSelectedClayId(parseInt(e.target.value))} className="w-full bg-zinc-950/50 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 transition-all">{clays.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
               </div>
               <div className="bg-zinc-950/50 p-5 rounded-2xl border border-zinc-800">
                 <div className="flex justify-between mb-4"><span className="text-sm font-medium text-zinc-400">Kiln Temperature</span><span className="text-sm font-bold text-orange-400">{coneTemp}°C</span></div>
-                <input type="range" min="1000" max="1350" step="10" value={coneTemp} onChange={(e) => setConeTemp(parseInt(e.target.value))} className="w-full h-2 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-orange-500" />
+                <input type="range" min="1000" max="1350" step="10" value={coneTemp} onChange={(e) => setConeTemp(parseInt(e.target.value))} className="range-slider range-orange" />
               </div>
               <button onClick={handleFire} disabled={kilnLoading} className="w-full bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-400 hover:to-red-400 text-black font-bold py-3.5 px-4 rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-lg shadow-orange-500/20 flex items-center justify-center gap-2">{kilnLoading ? 'Firing...' : <><Flame size={20} /> Fire the Kiln</>}</button>
               {kilnResult && (
-                <div className="bg-zinc-950/50 p-6 rounded-2xl border border-orange-500/20 space-y-6 animate-in fade-in zoom-in-95 duration-300">
+                <div className="bg-zinc-950/50 p-6 rounded-2xl border border-orange-500/20 space-y-6 animate-pop-in">
                   <h3 className="text-lg font-bold text-orange-400 flex items-center gap-2"><Flame size={20} /> Kiln Results</h3>
                   <div className="flex items-center justify-center gap-8 py-4">
                     <div className="text-center"><p className="text-xs text-zinc-500 uppercase mb-2">Before Firing</p><div className="w-20 h-20 rounded-xl border-2 border-zinc-700 shadow-inner" style={{ backgroundColor: glazes.find(g => g.id === selectedGlazeId)?.base_color_hex }}></div></div>
@@ -418,7 +491,7 @@ function App() {
           )}
 
           {activeTab === 'sculpture' && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="space-y-6 animate-tab-enter">
               <div><label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Material</label><select value={selectedMaterialId} onChange={(e) => setSelectedMaterialId(parseInt(e.target.value))} className="w-full bg-zinc-950/50 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500 transition-all">{sculptureMaterials.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></div>
               <div className="grid grid-cols-3 gap-3">
                 <div><label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Height (m)</label><input type="number" step="0.1" min="0.1" value={sculptureHeight} onChange={(e) => setSculptureHeight(parseFloat(e.target.value))} className="w-full bg-zinc-950/50 border border-zinc-700 rounded-xl px-3 py-3 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all" /></div>
@@ -427,11 +500,11 @@ function App() {
               </div>
               <div className="bg-zinc-950/50 p-5 rounded-2xl border border-zinc-800">
                 <div className="flex justify-between mb-4"><span className="text-sm font-medium text-zinc-400">Arm Extension</span><span className="text-sm font-bold text-amber-400">{armExtension}m</span></div>
-                <input type="range" min="0" max="3" step="0.1" value={armExtension} onChange={(e) => setArmExtension(parseFloat(e.target.value))} className="w-full h-2 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-amber-500" />
+                <input type="range" min="0" max="3" step="0.1" value={armExtension} onChange={(e) => setArmExtension(parseFloat(e.target.value))} className="range-slider" />
               </div>
               <button onClick={handleAnalyzeSculpture} disabled={sculptureLoading} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black font-bold py-3.5 px-4 rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2">{sculptureLoading ? 'Analyzing...' : <><Box size={20} /> Analyze Structural Integrity</>}</button>
               {sculptureResult && (
-                <div className="bg-zinc-950/50 p-6 rounded-2xl border border-amber-500/20 space-y-4 animate-in fade-in zoom-in-95 duration-300">
+                <div className="bg-zinc-950/50 p-6 rounded-2xl border border-amber-500/20 space-y-4 animate-pop-in">
                   <h3 className="text-lg font-bold text-amber-400 flex items-center gap-2"><Box size={20} /> Structural Analysis</h3>
                   <div className="grid grid-cols-2 gap-4 text-sm">
                     <div className="bg-zinc-900/50 p-3 rounded-lg border border-zinc-800"><span className="text-zinc-500 block text-xs uppercase">Weight</span><span className="font-bold text-zinc-200">{sculptureResult.analysis.weight_kg} kg</span></div>
@@ -446,7 +519,7 @@ function App() {
           )}
 
           {activeTab === 'stl' && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="space-y-6 animate-tab-enter">
               <div className="text-center mb-2">
                 <h3 className="text-xl font-bold text-zinc-100 flex items-center justify-center gap-2"><FileBox size={24} className="text-amber-400" /> 3D Sculpture Viewer</h3>
                 <p className="text-sm text-zinc-500 mt-1">Left-click to rotate • Right-click to pan • Scroll to zoom</p>
@@ -468,7 +541,7 @@ function App() {
                   <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Lighting Intensity</label>
                   <div className="flex items-center gap-3 bg-zinc-950/50 border border-zinc-700 rounded-xl px-4 py-3">
                     <Sun size={18} className="text-zinc-400" />
-                    <input type="range" min="0.1" max="2.0" step="0.1" value={lightIntensity} onChange={(e) => setLightIntensity(parseFloat(e.target.value))} className="flex-1 h-2 bg-zinc-800 rounded-full appearance-none cursor-pointer accent-amber-500" />
+                    <input type="range" min="0.1" max="2.0" step="0.1" value={lightIntensity} onChange={(e) => setLightIntensity(parseFloat(e.target.value))} className="flex-1 range-slider" />
                   </div>
                 </div>
               </div>
@@ -526,7 +599,7 @@ function App() {
               )}
 
               <div className="bg-blue-900/10 border border-blue-500/20 rounded-xl p-4 flex gap-3">
-                <AlertTriangle size={20} className="text-blue-400 flex-shrink-0 mt-0.5" />
+                <AlertTriangle size={20} className="text-blue-400 shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-semibold text-blue-300">Pro Tip</p>
                   <p className="text-sm text-blue-400/80 mt-1">Combine this viewer with the <strong>Sculpture</strong> tab. Visualize your STL here, then input the dimensions in the Sculpture tab to run a real-time structural integrity analysis.</p>
@@ -534,8 +607,41 @@ function App() {
               </div>
             </div>
           )}
+          </>)}
         </div>
       </div>
+
+      {nameDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={() => closeName(null)}>
+          <form
+            role="dialog" aria-modal="true" aria-label={nameDialog.title}
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={(e) => { e.preventDefault(); closeName(nameDialog.value) }}
+            onKeyDown={(e) => { if (e.key === 'Escape') closeName(null) }}
+            className="w-full max-w-sm bg-zinc-900 border border-zinc-700 rounded-2xl p-6 shadow-2xl space-y-4 animate-pop-in"
+          >
+            <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wider">{nameDialog.title}</label>
+            <input
+              autoFocus value={nameDialog.value}
+              onChange={(e) => setNameDialog({ ...nameDialog, value: e.target.value })}
+              onFocus={(e) => e.target.select()}
+              className="w-full bg-zinc-950/50 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500"
+            />
+            <div className="flex gap-3 justify-end">
+              <button type="button" onClick={() => closeName(null)} className="px-4 py-2.5 rounded-xl text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 font-semibold transition-colors">Cancel</button>
+              <button type="submit" className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-black font-bold">Confirm</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {toast && (
+        <div role="status" aria-live="polite" className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-50 max-w-[calc(100vw-2rem)] flex items-center gap-3 px-4 py-3 rounded-xl border shadow-2xl backdrop-blur-md text-sm font-medium animate-toast-in ${toast.kind === 'error' ? 'bg-red-950/90 border-red-500/40 text-red-200' : 'bg-zinc-900/90 border-zinc-700 text-zinc-200'}`}>
+          {toast.kind === 'error' ? <AlertTriangle size={18} className="shrink-0 text-red-400" /> : <CircleCheck size={18} className="shrink-0 text-amber-400" />}
+          <span>{toast.message}</span>
+          <button onClick={() => setToast(null)} aria-label="Dismiss" className="shrink-0 text-zinc-400 hover:text-zinc-100"><X size={16} /></button>
+        </div>
+      )}
     </div>
   )
 }
